@@ -10,6 +10,7 @@ from typing import Any, Iterable, Sequence
 import yaml
 
 
+# Modello di configurazione runtime (caricato da YAML)
 @dataclass(frozen=True)
 class DbConfig:
     dt_type: str
@@ -29,6 +30,7 @@ def _require(value: Any, field: str) -> Any:
     return value
 
 
+# Normalizza dt_type (numero o stringa) e calcola la porta di default per l'engine scelto
 def _resolve_dt_type_and_default_port(dt_type: str) -> tuple[str, int]:
     v = str(dt_type).strip()
     mapping: dict[str, tuple[str, int]] = {
@@ -52,6 +54,7 @@ def _resolve_dt_type_and_default_port(dt_type: str) -> tuple[str, int]:
     raise ValueError(f"dt_type non supportato: {dt_type}")
 
 
+# Carica config YAML e valida i campi obbligatori per source/destination
 def load_config(path: str) -> tuple[DbConfig, DbConfig]:
     with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
@@ -79,6 +82,7 @@ def load_config(path: str) -> tuple[DbConfig, DbConfig]:
     return to_cfg(src, "source_database"), to_cfg(dst, "destination_database")
 
 
+# Interpreta table_view_in: "all" (tutte), singola tabella, oppure lista separata da ';'
 def _parse_table_view_in(value: Any) -> tuple[str, list[str]]:
     if value is None:
         return "all", []
@@ -93,6 +97,7 @@ def _parse_table_view_in(value: Any) -> tuple[str, list[str]]:
     raise ValueError("table_view_in deve essere 'all', un nome tabella, o più nomi separati da ';'")
 
 
+# Ordina le tabelle in base alle dipendenze FK (prima i parent, poi i child) per ridurre errori in creazione FK
 def _order_tables_by_fk_dependencies(source: "DbAdapter", conn, tables: list[str]) -> list[str]:
     nodes = {t.lower(): t for t in tables}
     node_keys = set(nodes.keys())
@@ -135,6 +140,7 @@ def _order_tables_by_fk_dependencies(source: "DbAdapter", conn, tables: list[str
     return out
 
 
+# Interfaccia DB: operazioni minime per leggere schema/dati dal source e ricrearli sul destination
 class DbAdapter:
     kind: str
 
@@ -196,6 +202,7 @@ class DbAdapter:
         return True
 
 
+# Adapter MariaDB/MySQL (usa PyMySQL) per schema + dati + metadati (indici/FK/view/proc)
 class MariaDbAdapter(DbAdapter):
     kind = "MariaDB"
 
@@ -983,6 +990,7 @@ class MsSqlAdapter(DbAdapter):
         return f"ALTER TABLE [dbo].[{child}] ADD CONSTRAINT [{name}] FOREIGN KEY ({child_cols}) REFERENCES [dbo].[{parent}] ({parent_cols})"
 
 
+# Factory: costruisce l'adapter corretto in base al dt_type (numero o nome)
 def build_adapter(cfg: DbConfig) -> DbAdapter:
     dt_name, _default_port = _resolve_dt_type_and_default_port(cfg.dt_type)
     t = dt_name.lower()
@@ -995,6 +1003,7 @@ def build_adapter(cfg: DbConfig) -> DbAdapter:
     raise ValueError(f"dt_type non supportato: {cfg.dt_type}")
 
 
+# Iteratore streaming delle righe dal source (evita di caricare tutto in RAM)
 def _iter_source_rows(source: DbAdapter, conn, table: str, columns: list[str]) -> Iterable[Sequence[Any]]:
     cur = conn.cursor()
     if source.kind == "MariaDB":
@@ -1007,6 +1016,7 @@ def _iter_source_rows(source: DbAdapter, conn, table: str, columns: list[str]) -
         yield tuple(row)
 
 
+# Traduzione "best-effort" della SELECT delle view tra MSSQL e MariaDB (conversioni semplici di quoting/funzioni)
 def _translate_view_sql(sql: str, src_kind: str, dst_kind: str) -> str:
     s = sql.strip()
     if src_kind == dst_kind:
@@ -1026,6 +1036,7 @@ def _translate_view_sql(sql: str, src_kind: str, dst_kind: str) -> str:
     return s
 
 
+# Traduzione "best-effort" delle stored procedure tra MSSQL e MariaDB (conversioni semplici + mapping tipi parametri)
 def _translate_procedure_sql(sql: str, src_kind: str, dst_kind: str, proc_name: str) -> str:
     s = sql.strip()
     if src_kind == dst_kind:
@@ -1142,6 +1153,7 @@ def _translate_procedure_sql(sql: str, src_kind: str, dst_kind: str, proc_name: 
     return s
 
 
+# Rimuove DEFINER e altre clausole non portabili nelle definizioni MariaDB (utile per migrazioni cross-environment)
 def _strip_mariadb_definer(sql: str) -> str:
     s = sql
     s = re.sub(r"\bDEFINER\s*=\s*`[^`]+`\s*@\s*`[^`]+`\s*", " ", s, flags=re.IGNORECASE)
@@ -1150,6 +1162,7 @@ def _strip_mariadb_definer(sql: str) -> str:
     return s
 
 
+# Scrive sia su stdout che su file log (se inizializzato)
 def _print(msg: str) -> None:
     ts = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}\n"
@@ -1164,6 +1177,7 @@ def _print(msg: str) -> None:
             pass
 
 
+# Inizializza il file di log in append (crea la cartella logs se manca)
 def _init_log_file() -> None:
     if getattr(_print, "_log_fh", None) is not None:
         return
@@ -1175,6 +1189,7 @@ def _init_log_file() -> None:
     _print(f"Log file: {log_path}")
 
 
+# Chiude il file di log (se aperto)
 def _close_log_file() -> None:
     fh = getattr(_print, "_log_fh", None)
     if fh is not None:
@@ -1196,6 +1211,7 @@ def _is_mariadb_invalid_default_error(e: Exception) -> bool:
 
 
 def main() -> int:
+    # Bootstrap logging e parsing argomenti CLI
     _init_log_file()
     parser = argparse.ArgumentParser(description="Copia database/tabelle tra DBMS (MSSQL <-> MariaDB).")
     parser.add_argument("--config", default="config/config.yaml", help="Percorso config YAML")
@@ -1203,6 +1219,7 @@ def main() -> int:
     args = parser.parse_args()
 
     started_at = _dt.datetime.now()
+    # Contatori finali (riepilogo)
     stats: dict[str, int] = {
         "tables": 0,
         "tables_ok": 0,
@@ -1218,10 +1235,12 @@ def main() -> int:
         "procs_skip": 0,
     }
 
+    # Costruzione adapter source/destination in base a dt_type
     src_cfg, dst_cfg = load_config(args.config)
     src = build_adapter(src_cfg)
     dst = build_adapter(dst_cfg)
 
+    # Selezione delle tabelle da copiare (all/list/single) e gestione mapping input->output in modalità singola tabella
     mode, table_view_names = _parse_table_view_in(src_cfg.table_view_in)
     all_mode = mode == "all"
     list_mode = mode == "list"
@@ -1251,15 +1270,19 @@ def main() -> int:
             skip_tables_raw.append(s)
     skip_tables = {t.lower() for t in skip_tables_raw}
 
+    # Logging iniziale delle connessioni (senza password)
     _print(f"Sorgente: {src.kind} {src_cfg.host}:{src_cfg.port}/{src_cfg.database}")
     _print(f"Destinazione: {dst.kind} {dst_cfg.host}:{dst_cfg.port}/{dst_cfg.database}")
 
+    # Assicura che il database di destinazione esista prima di connettersi
     _print("Verifica/creazione database di destinazione...")
     dst.create_database_if_missing(dst_cfg.database)
 
+    # Connessioni DB (una per source e una per destination)
     src_conn = src.connect(src_cfg.database)
     dst_conn = dst.connect(dst_cfg.database)
     try:
+        # Determina elenco tabelle da copiare, con filtri e normalizzazione nome (schema.table -> table)
         available_src_tables = src.list_tables(src_conn)
         available_lower = {t.lower(): t for t in available_src_tables}
         if all_mode:
@@ -1293,6 +1316,7 @@ def main() -> int:
         stats["tables"] = len(src_tables)
 
         if dst.kind == "MariaDB":
+            # Guardrail: se il source ha tabelle con maiuscole, la destination MariaDB deve preservare il case (lower_case_table_names != 1)
             cur = dst_conn.cursor()
             try:
                 cur.execute("SELECT @@lower_case_table_names")
@@ -1317,6 +1341,7 @@ def main() -> int:
 
         fk_checks_disabled = False
         if dst.kind == "MariaDB" and multi_mode:
+            # Migliora le performance e riduce errori durante la creazione bulk: FK checks off (ripristinati a fine fase tabelle)
             cur = dst_conn.cursor()
             try:
                 cur.execute("SET FOREIGN_KEY_CHECKS=0")
@@ -1328,6 +1353,7 @@ def main() -> int:
 
         mssql_pre_dropped = False
         if dst.kind == "MSSQL" and multi_mode:
+            # In MSSQL conviene droppare in ordine inverso prima del create per minimizzare conflitti/dipendenze
             _print("Destinazione MSSQL: DROP tabelle esistenti (ordine dipendenze inverso)")
             dcur = dst_conn.cursor()
             try:
@@ -1340,6 +1366,7 @@ def main() -> int:
             mssql_pre_dropped = True
 
         try:
+            # Fase 1: tabelle (schema + dati in multi_mode, solo dati/align in single_mode)
             for table in src_tables:
                 if multi_mode:
                     _print(f"Tabella: {table} (schema + dati)")
@@ -1352,6 +1379,7 @@ def main() -> int:
                 dst_table = table
 
                 if multi_mode:
+                    # Modalità completa: ricrea la tabella in destinazione (DROP + CREATE), poi carica i dati
                     create_sql = dst.render_create_table(dst_table, cols, pk, include_defaults=True)
 
                     dcur = dst_conn.cursor()
@@ -1376,6 +1404,7 @@ def main() -> int:
                     finally:
                         dcur.close()
                 else:
+                    # Modalità allineamento dati: se tabella esiste verifica struttura, decide TRUNCATE/DELETE o ricreazione
                     dst_table = single_table_out or dst_table
                     if dst.table_exists(dst_conn, dst_table):
                         should_recreate = False
@@ -1452,6 +1481,7 @@ def main() -> int:
                     dst_conn.rollback()
         finally:
             if fk_checks_disabled:
+                # Ripristina FK checks (MariaDB)
                 cur = dst_conn.cursor()
                 try:
                     cur.execute("SET FOREIGN_KEY_CHECKS=1")
@@ -1461,6 +1491,7 @@ def main() -> int:
                     cur.close()
 
         if multi_mode:
+            # Fase 2: ricrea indici e foreign key dopo il caricamento dati (riduce tempi e problemi di dipendenze)
             _print("Indici: copia definizioni")
             for table in src_tables:
                 for idx in src.list_indexes(src_conn, table):
@@ -1511,6 +1542,7 @@ def main() -> int:
                         stats["fk_skip"] += 1
 
         if all_mode:
+            # Fase 3: replica view e stored procedure (solo quando si sta clonando l'intero database)
             _print("View: copia definizioni")
             for view in src.list_views(src_conn):
                 try:
@@ -1570,6 +1602,7 @@ def main() -> int:
                     stats["procs_skip"] += 1
 
         finished_at = _dt.datetime.now()
+        # Riepilogo finale
         _print(
             "Riepilogo: "
             f"tabelle={stats['tables']} ok={stats['tables_ok']} skip={stats['tables_skip']} righe={stats['rows']}; "
@@ -1582,6 +1615,7 @@ def main() -> int:
         _print("Completato.")
         return 0
     finally:
+        # Cleanup connessioni e log
         try:
             src_conn.close()
         finally:
@@ -1595,6 +1629,7 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except Exception:
+        # In caso di errore non gestito, logga traceback sia su console che su file
         _init_log_file()
         _print("ERRORE NON GESTITO:")
         _print(traceback.format_exc().rstrip())
