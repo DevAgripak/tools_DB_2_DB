@@ -1,0 +1,25 @@
+# Tipi database (dt_type) e porte di default:
+# 1 - MSSQL 1433
+# 2 - MariaDB 3306
+# 3 - MySql 3306
+# 4 - PostgreSQL 5432
+# Nota: se ometti "port:" viene usata la porta di default del dt_type; 
+#       se la specifichi, viene usata quella.
+
+source_database:
+  dt_type: 2
+  host: 0.0.0.0
+  port: 3306
+  database: nomedatabase
+  table_view_in: all
+  user: userid
+  password: userpwd
+
+destination_database:
+  dt_type: 2
+  host: 0.0.0.0
+  port: 3306
+  database: nomedatabase
+  table_view_out: all
+  user: userid
+  password: userpwd

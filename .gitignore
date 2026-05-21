@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.log
+
+.venv/
+venv/
+
+logs/
+
+config/config.yaml
+config/config.local.yaml
