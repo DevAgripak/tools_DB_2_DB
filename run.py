@@ -1169,7 +1169,7 @@ def _init_log_file() -> None:
         return
     log_dir = Path(__file__).resolve().parent / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "Tools_DB_2_DB.log"
+    log_path = log_dir / "tools_DB_2_DB.log"
     fh = open(log_path, "a", encoding="utf-8", buffering=1)
     setattr(_print, "_log_fh", fh)
     _print(f"Log file: {log_path}")
