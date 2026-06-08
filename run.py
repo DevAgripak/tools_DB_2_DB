@@ -90,11 +90,18 @@ def _parse_table_view_in(value: Any) -> tuple[str, list[str]]:
         v = value.strip()
         if not v or v.lower() == "all":
             return "all", []
+        v_lower = v.lower()
+        for prefix in ("view:", "v:"):
+            if v_lower.startswith(prefix):
+                name = v[len(prefix) :].strip()
+                if not name:
+                    raise ValueError("table_view_in non valido: specifica il nome dopo 'view:'")
+                return "single_view", [name]
         parts = [p.strip() for p in v.split(";") if p.strip()]
         if len(parts) <= 1:
             return "single", [v]
         return "list", parts
-    raise ValueError("table_view_in deve essere 'all', un nome tabella, o più nomi separati da ';'")
+    raise ValueError("table_view_in deve essere 'all', un nome tabella, 'view:<nome_view>', o più nomi separati da ';'")
 
 
 # Ordina le tabelle in base alle dipendenze FK (prima i parent, poi i child) per ridurre errori in creazione FK
@@ -1271,6 +1278,7 @@ def main() -> int:
     list_mode = mode == "list"
     multi_mode = all_mode or list_mode
     single_mode = mode == "single"
+    single_view_mode = mode == "single_view"
 
     single_table_in: str | None = None
     single_table_out: str | None = None
@@ -1307,6 +1315,56 @@ def main() -> int:
     src_conn = src.connect(src_cfg.database)
     dst_conn = dst.connect(dst_cfg.database)
     try:
+        if single_view_mode:
+            wanted = (table_view_names[0] if table_view_names else "").split(".")[-1].strip()
+            if not wanted:
+                raise RuntimeError("table_view_in non valido")
+
+            available_views = src.list_views(src_conn)
+            views_lower = {v.lower(): v for v in available_views}
+            match_view = views_lower.get(wanted.lower())
+            if match_view is None:
+                raise RuntimeError(f"View non trovata nel source_database: {wanted}")
+
+            view_def = src.get_view_definition(src_conn, match_view)
+            if src.kind == dst.kind:
+                view_sql = _strip_mariadb_definer(view_def) if dst.kind == "MariaDB" else view_def
+            else:
+                select_sql = _translate_view_sql(view_def, src.kind, dst.kind)
+                if dst.kind == "MariaDB":
+                    view_sql = f"CREATE VIEW `{match_view.replace('`', '``')}` AS {select_sql}"
+                else:
+                    view_sql = f"CREATE VIEW [dbo].[{match_view.replace(']', ']]')}] AS {select_sql}"
+
+            dcur = dst_conn.cursor()
+            try:
+                if dst.kind == "MariaDB":
+                    dcur.execute(f"DROP VIEW IF EXISTS `{match_view.replace('`', '``')}`")
+                else:
+                    safe = match_view.replace("]", "]]").replace("'", "''")
+                    dcur.execute(f"IF OBJECT_ID(N'[dbo].[{safe}]', 'V') IS NOT NULL DROP VIEW [dbo].[{safe}]")
+                dst_conn.commit()
+
+                dcur.execute(view_sql)
+                dst_conn.commit()
+                _print(f"View OK: {match_view}")
+                stats["views_ok"] += 1
+            finally:
+                dcur.close()
+
+            finished_at = _dt.datetime.now()
+            _print(
+                "Riepilogo: "
+                f"tabelle={stats['tables']} ok={stats['tables_ok']} skip={stats['tables_skip']} righe={stats['rows']}; "
+                f"indici ok={stats['indexes_ok']} skip={stats['indexes_skip']}; "
+                f"fk ok={stats['fk_ok']} skip={stats['fk_skip']}; "
+                f"view ok={stats['views_ok']} skip={stats['views_skip']}; "
+                f"proc ok={stats['procs_ok']} skip={stats['procs_skip']}; "
+                f"durata={(finished_at - started_at)}"
+            )
+            _print("Completato.")
+            return 0
+
         # Determina elenco tabelle da copiare, con filtri e normalizzazione nome (schema.table -> table)
         available_src_tables = src.list_tables(src_conn)
         available_lower = {t.lower(): t for t in available_src_tables}
@@ -1320,6 +1378,12 @@ def main() -> int:
                     continue
                 match = available_lower.get(wanted.lower())
                 if match is None:
+                    available_views = src.list_views(src_conn)
+                    if any(v.lower() == wanted.lower() for v in available_views):
+                        raise RuntimeError(
+                            f"Nome '{wanted}' trovato tra le view, non tra le tabelle. "
+                            f"Per copiare solo la view usa table_view_in: view:{wanted}"
+                        )
                     raise RuntimeError(f"Tabella non trovata nel source_database: {wanted}")
                 if match not in src_tables:
                     src_tables.append(match)
@@ -1327,6 +1391,12 @@ def main() -> int:
             wanted_lower = (single_table_in or "").lower()
             match = available_lower.get(wanted_lower)
             if match is None:
+                available_views = src.list_views(src_conn)
+                if any(v.lower() == wanted_lower for v in available_views):
+                    raise RuntimeError(
+                        f"Nome '{single_table_in}' trovato tra le view, non tra le tabelle. "
+                        f"Per copiare solo la view usa table_view_in: view:{single_table_in}"
+                    )
                 raise RuntimeError(f"Tabella non trovata nel source_database: {single_table_in}")
             src_tables = [match]
             single_table_out = single_table_out_configured or match
