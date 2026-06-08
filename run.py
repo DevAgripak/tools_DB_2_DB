@@ -558,6 +558,17 @@ class MsSqlAdapter(DbAdapter):
     def __init__(self, cfg: DbConfig):
         self.cfg = cfg
 
+    def _odbc_escape(self, value: str) -> str:
+        s = str(value)
+        if any(x in s for x in [";", "{", "}"]) or (s[:1].isspace() or s[-1:].isspace()):
+            s = s.replace("}", "}}")
+            return "{" + s + "}"
+        return s
+
+    def _is_login_failed(self, e: Exception) -> bool:
+        msg = str(e)
+        return ("Login failed for user" in msg) or ("(18456)" in msg) or ("'28000'" in msg) or ("[28000]" in msg)
+
     def create_database_if_missing(self, database: str) -> None:
         conn = self.connect(database="master")
         try:
@@ -615,14 +626,17 @@ class MsSqlAdapter(DbAdapter):
             ]
             for extra in variants:
                 try:
-                    return pyodbc.connect(
+                    conn_str = (
                         f"DRIVER={{{driver}}};"
                         f"SERVER={server};"
-                        f"DATABASE={database};"
-                        f"UID={self.cfg.user};"
-                        f"PWD={self.cfg.password};"
+                        f"DATABASE={self._odbc_escape(database)};"
+                        f"UID={self._odbc_escape(self.cfg.user)};"
+                        f"PWD={self._odbc_escape(self.cfg.password)};"
                         "Connection Timeout=10;"
-                        + extra,
+                        + extra
+                    )
+                    return pyodbc.connect(
+                        conn_str,
                         autocommit=False,
                     )
                 except Exception as e:
@@ -635,6 +649,17 @@ class MsSqlAdapter(DbAdapter):
             raise RuntimeError(
                 "Connessione a SQL Server fallita: driver ODBC per SQL Server non disponibile. "
                 "Installa 'ODBC Driver 17 for SQL Server' o 'ODBC Driver 18 for SQL Server' (Microsoft). "
+                f"Driver rilevati: {installed_msg}. "
+                f"Server: {server}. "
+                f"Ultimo errore: {type(last_error).__name__}: {last_error}"
+            )
+
+        if last_error is not None and self._is_login_failed(last_error):
+            raise RuntimeError(
+                "Connessione a SQL Server fallita per credenziali non valide o autenticazione non consentita. "
+                f"Utente: {self.cfg.user}. "
+                "Verifica user/password, che SQL Server sia in modalità Mixed Mode (SQL Authentication), "
+                "che l'utente non sia disabilitato/bloccato e che abbia accesso al database richiesto. "
                 f"Driver rilevati: {installed_msg}. "
                 f"Server: {server}. "
                 f"Ultimo errore: {type(last_error).__name__}: {last_error}"
